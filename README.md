@@ -1,4 +1,5 @@
-# Os dados em anexo (case_internacao_SUS.xls) são referentes às internações que
+# Análise de Internações no Sistema de Saúde Brasileiro
+Os dados em anexo (case_internacao_SUS.xls) são referentes às internações que
 ocorreram no país durante o período de dezembro de 2017 a julho de 2019, separados
 por região e unidade de federação (Fonte: Ministério da Saúde - Sistema de Informações
 Hospitalares do SUS (SIH/SUS)).
