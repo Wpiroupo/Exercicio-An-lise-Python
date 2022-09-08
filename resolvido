@@ -1,0 +1,393 @@
+## Instala e importa todas as bibliotecas
+
+# Pacote de atualização para leitura de arquivo ".xls"
+!pip install --upgrade xlrd
+
+# Tratamento das bases
+import pandas as pd
+import numpy as np
+import datetime
+
+# Graficos
+import matplotlib as mlp
+import plotly.express as px
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Deletar o output
+from IPython.display import clear_output 
+clear_output()
+import warnings
+warnings.filterwarnings("ignore")
+
+#Modelagem
+from sklearn.metrics import mean_squared_error
+from statsmodels.tsa.arima_model import ARIMA
+
+print("Dependências Carregadas")
+
+
+# Faz a leitura da base (peguei o caminho onde salvei o arquivo no Drive)
+
+arquivo = "case_internacao_SUS.xls"
+arquivo = pd.read_excel(arquivo, sheet_name=None) #Sheet_name=None para pegar todas as abas
+
+
+# Junta todas as planilhas em um DataFrame
+
+
+# For loop pegar o nome da aba colocar em uma coluna e juntar elas em um df master
+
+todas_abas = []
+
+for name, sheet in arquivo.items():
+    sheet['sheet'] = name
+    sheet = sheet.rename(columns=lambda x: x.split('\n')[-1])
+    todas_abas.append(sheet)
+
+df = pd.concat(todas_abas)
+df.reset_index(inplace=True, drop=True)
+
+print("Aqui temos o DF completo com a coluna trazendo a Data")
+
+
+# Renomear colunas (gosto de tratar as colunas sem assento, sem ç e separada por _)
+
+df.rename( columns={
+    'Região/Unidade da Federação' : 'regiao_unidade_da_federacao',
+    'Internações' : 'internacoes',
+    'AIH_aprovadas' : 'aih_aprovadas',
+    'Valor_total' : 'valor_total',
+    'Valor_serviços_hospitalares' : 'valor_servicos_hospitalares',
+    'Val_serv_hosp_-_compl_federal' : 'val_serv_hosp_compl_federal',
+    'Val_serv_hosp_-_compl_gestor': 'val_serv_hosp_compl_gestor',
+    'Valor_serviços_profissionais': 'valor_servicos_profissionais',
+    'Val_serv_prof_-_compl_federal': 'val_serv_prof_compl_federal',
+    'Val_serv_prof_-_compl_gestor': 'val_serv_prof_compl_gestor',
+    'Valor_médio_AIH': 'valor_medio_aih',
+    'Valor_médio_intern': 'valor_medio_intern',
+    'Dias_permanência': 'dias_permanencia',
+    'Média_permanência': 'media_permanencia',
+    'Óbitos': 'obitos',
+    'Taxa_mortalidade': 'taxa_mortalidade',
+    'sheet': 'mes_ano'
+}, inplace=True )
+
+
+#Ajustar a primeira coluna e separar região e estado
+
+if 'estado' not in df:
+    df_regiao = df['regiao_unidade_da_federacao'].str.split('Região', expand=True)
+    df_regiao = df_regiao.fillna(method='ffill')
+    df_regiao.rename(columns = {0 : 'estado', 1 : 'regiao'}, inplace = True)
+    df = pd.concat([df,df_regiao], axis=1)
+    
+    
+#Configura visualização dos floats
+
+pd.options.display.float_format = '{:,.2f}'.format
+
+
+# Transforma em formato numerico, caso de erro preenche NaN
+
+df['val_serv_hosp_compl_federal'] = pd.to_numeric(df['val_serv_hosp_compl_federal'], errors='coerce')
+df['val_serv_hosp_compl_gestor'] = pd.to_numeric(df['val_serv_hosp_compl_gestor'], errors='coerce')
+df['val_serv_prof_compl_federal'] = pd.to_numeric(df['val_serv_prof_compl_federal'], errors='coerce')
+df['val_serv_prof_compl_gestor'] = pd.to_numeric(df['val_serv_prof_compl_gestor'], errors='coerce')
+
+
+# 2 Métodos para preencher os dados vazios 
+
+# 1º Dei preferencia em preencher de forma linear
+
+df['val_serv_hosp_compl_federal'] = df['val_serv_hosp_compl_federal'].interpolate()
+df['val_serv_hosp_compl_gestor'] = df['val_serv_hosp_compl_gestor'].interpolate()
+df['val_serv_prof_compl_federal'] = df['val_serv_prof_compl_federal'].interpolate()
+df['val_serv_prof_compl_gestor'] = df['val_serv_prof_compl_gestor'].interpolate()
+
+# 2º Preencher com a média
+
+media = df['val_serv_hosp_compl_federal'].mean()
+df['val_serv_hosp_compl_federal'] = df['val_serv_hosp_compl_federal'].fillna(media)
+media = df['val_serv_hosp_compl_gestor'].mean()
+df['val_serv_hosp_compl_gestor'] = df['val_serv_hosp_compl_gestor'].fillna(media)
+media = df['val_serv_prof_compl_federal'].mean()
+df['val_serv_prof_compl_federal'] = df['val_serv_prof_compl_federal'].fillna(media)
+media = df['val_serv_prof_compl_gestor'].mean()
+df['val_serv_prof_compl_gestor'] = df['val_serv_prof_compl_gestor'].fillna(media)
+
+
+# Remover dados vazios/insignificantes
+
+df = df[df.regiao_unidade_da_federacao != ' ']
+df = df[df.estado != ''] # se esta vazio é porque é região
+df = df[df.estado != 'Total']
+
+
+# Remove os 2 pontos na frente do estado
+
+for row in df['regiao_unidade_da_federacao']:
+    try:
+        if '..' in row:
+          df['regiao_unidade_da_federacao'] = df['regiao_unidade_da_federacao'].str[2:]
+          df['estado'] = df['estado'].str[2:] 
+    except TypeError:
+        pass
+        
+# Formatando a data 
+
+ajustar_mes_ano = {'jul19': '07-2019', 'jun19': '06-2019',
+                   'dez17': '12-2017', 'mar18': '03-2018',
+                   'abr19': '04-2019', 'abr18': '04-2018',
+                   'mai18': '05-2018', 'jul18': '07-2018',
+                   'ago18': '08-2018', 'set18': '09-2018',
+                   'nov18': '11-2018', 'dez18': '12-2018',
+                   'jan19': '01-2019', 'fev19': '02-2019',
+                   }
+
+
+# Transformando objeto em data
+
+for row in df['mes_ano']:
+    try:
+        if 'jul19' in row:
+          df['mes_ano'] = df['mes_ano'].map(ajustar_mes_ano)  
+    except TypeError:
+      pass
+      
+df['mes_ano'] =  pd.to_datetime(df['mes_ano'], format='%m-%Y')
+
+# Crio colunas
+
+df['mes'] = pd.DatetimeIndex( df['mes_ano'] ).month
+df['ano'] = pd.DatetimeIndex( df['mes_ano'] ).year
+df["periodo"] = df['ano'].astype(str) +"-"+ df["mes"].astype(str)
+
+
+# 2 Análises
+
+# Dicionario para agregar e somar ou fazer a média das respectivas colunas
+
+f = {
+    'internacoes': 'sum', 'aih_aprovadas': 'sum', 'obitos': 'sum',
+     'dias_permanencia': 'sum', 'valor_total': 'sum', 'valor_servicos_hospitalares': 'sum',
+     'val_serv_hosp_compl_federal': 'sum', 'val_serv_hosp_compl_gestor': 'sum', 'valor_servicos_profissionais': 'sum',
+     'val_serv_prof_compl_federal': 'sum', 'val_serv_prof_compl_gestor': 'sum',
+     'valor_medio_aih': 'mean', 'valor_medio_intern': 'mean',
+     'media_permanencia': 'mean', 'taxa_mortalidade': 'mean',
+     }
+
+df_analise = df.groupby( by=['periodo', 'regiao', 'estado'], as_index=False).agg(f)
+df_analise['mes_ano'] =  pd.to_datetime(df_analise['periodo'], format='%Y-%m')
+
+
+# Big Numbers das bases tratadas
+
+big_numbers = df_analise.agg(f)
+big_numbers = big_numbers.to_frame().reset_index()
+big_numbers.rename(columns={'index': 'Dimensões', 0: 'Geral'}, inplace=True)
+big_numbers
+
+# Comportamento Geral ao longo do tempo 
+
+metricas_no_tempo = df_analise.groupby(['periodo']).agg(f)
+metricas_no_tempo
+# Percebemos a falta de dados no meio do periodo
+
+# Grafico do tempo
+
+plt.figure(figsize=[15, 5])
+plt.plot(metricas_no_tempo.index,
+         metricas_no_tempo['internacoes'],
+         metricas_no_tempo['aih_aprovadas'],
+         )
+plt.xlabel("Data")
+plt.title("Comparativo de internações e aih aprovadas");
+# Aprovações de AIH segue conforme as internações
+# Numero de internações mais baixa no final/Começo de ano
+
+# Grafico do tempo
+
+plt.figure(figsize=[15, 5])
+plt.plot(metricas_no_tempo.index,
+         metricas_no_tempo['taxa_mortalidade'],
+         )
+plt.xlabel("Data")
+plt.title("Análise na taxa de mortalidade");
+# esta crescendo oq podemos fazer para diminuir
+
+#Descrições estatisticas das principais métricas
+
+df_analise[['internacoes', 'dias_permanencia', 'media_permanencia', 'obitos', 'taxa_mortalidade', 'valor_total', 'valor_medio_intern']].describe()
+# count = Contagem de quantas vezes aparece na base
+# mean = média dos valores das respectivas colunas
+# std = desvio padrão
+# min = valor mínimo
+# 25% = 
+# 50% = mediana
+# 75% = 
+# max = valor máximo
+
+
+# Analisar por mês para tentar encontrar algum padrao entre intenações e o valor aprovado da produção por data
+
+df_analise.groupby(['mes_ano']).describe()[['internacoes', 'valor_total']]
+
+# Menor número de internações foi em dezembro de 2017 coincidentemente no primeiro mes da base 
+# Já o maior internações foi em Abril de 2019 um dos ultimos meses da base, podendo concluirmos que esta crescendo o numero de internações
+
+# Percebemos que em Dezembro de 2017 tivemos a menor média e o menor valor aprovado da produção.
+# Já em Julho de 2019 tivemos a maior média e o maior valor aprovado na produção, sendo ela o ultimo periodo da base podemos concluir que esta crescendo.
+
+# Conclusão: Se compararmos tanto as internações quanto o valor aprovado da produção de 2017 podemos ver que esta crescendo ao longo do tempo 
+
+
+# Variaveis para facilitar nos graficos
+
+# estados com maiores numeros de internações
+internacoes_por_regiao = df_analise.groupby( by=['regiao'] ).sum()['internacoes'].reset_index()
+internacoes_por_regiao = internacoes_por_regiao.sort_values(['internacoes'], ascending=[False])
+
+# estados com maiores numeros de internações
+internacoes_por_estado = df_analise.groupby( by=['estado'] ).sum()['internacoes'].reset_index()
+internacoes_por_estado = internacoes_por_estado.sort_values(['internacoes'], ascending=[False])
+
+# estados com maiores numeros de internações
+internacoes_por_data = df_analise.groupby( by=['mes_ano'] ).sum()['internacoes'].reset_index()
+internacoes_por_data = internacoes_por_data.sort_values(['mes_ano'], ascending=[False])
+
+# Monta um Geral com os estados
+df_estados = df_analise.groupby(['estado'], as_index=False).agg(f)
+df_regiao = df_analise.groupby(['regiao'], as_index=False).agg(f)
+
+fig = px.bar(df_analise, x="periodo", y="internacoes", color="regiao", title="Análise das internações por Região ao longo do tempo")
+fig.show()
+# Percebemos a falta de alguns dados 
+# maior regiao onde tem internação é no sudeste
+
+fig = px.bar(internacoes_por_regiao, x='regiao', y='internacoes', title='Análise da quantidade de internações por regiao')
+fig.show()
+# coneseguimos visualizar as maiore regioes com internações
+
+fig = px.bar(internacoes_por_estado, x='estado', y='internacoes', barmode='stack', title='Análise quantidade de Internações por estado')
+fig.show()
+# Identificamos os maiores estados em quantidade de internações
+#São Paulo é disparado o maior numero de casos de internação.
+#- Possuimos algumas datas vazias, como preenchelas?
+#- Qual seria uma possivel solução para diminui-la?
+
+# 3. Modelagem
+
+# separei as duplicadas do mes_ano para preencher com os meses restantes
+
+df_geral = df_analise.groupby(['mes_ano'], as_index=False).agg(f)
+df_geral['mes_ano'] = pd.to_datetime(df_geral['mes_ano'])
+df_geral = (df_geral.set_index('mes_ano')
+      .reindex(pd.date_range('2017-12-01', '2019-07-01', freq='MS'))
+      .rename_axis(['mes_ano'])
+      .fillna(0)
+      .reset_index())
+
+
+# Podemos prencheer com o valor mais próximo, tanto anterior quanto do seguint ou média
+# Utilizei preenchendo igual o valor do proximo do seguinte 
+
+df_geral = df_geral.replace(0, np.nan)
+df_geral = df_geral.fillna(method="bfill")
+
+# preenchimento dos dados para analisar sao paulo
+
+df_sp = df_analise[df_analise['estado'].str.contains("São Paulo")]
+
+
+# Preencher dados vazios
+
+df_sp = (df_sp.set_index('mes_ano')
+      .reindex(pd.date_range('2017-12-01', '2019-07-01', freq='MS'))
+      .rename_axis(['mes_ano'])
+      .fillna(0)
+      .reset_index())
+df_sp = df_sp.replace(0, np.nan)
+df_sp = df_sp.fillna(method="bfill")
+
+# análise de correlação
+df_geral_corr = df_geral[['internacoes', 'aih_aprovadas', 'obitos', 'dias_permanencia',
+                          'valor_total', 'valor_servicos_hospitalares','val_serv_hosp_compl_federal',
+                          'val_serv_hosp_compl_gestor','valor_servicos_profissionais',
+                          'val_serv_prof_compl_federal','val_serv_prof_compl_gestor',
+                          'valor_medio_aih', 'valor_medio_intern','media_permanencia',
+                          'taxa_mortalidade']]
+correlation = df_geral.corr()
+
+# plot da matriz de correlação
+sns.set(rc={'figure.figsize':(15.7,8.27)})
+plot_geral = sns.heatmap(correlation, annot = True, fmt=".1f", linewidths=.6)
+print('Análise de correlações Geral')
+plot_geral;
+
+# análise de correlação
+df_geral_corr = df_sp[['internacoes', 'aih_aprovadas', 'obitos', 'dias_permanencia',
+                          'valor_total', 'valor_servicos_hospitalares','val_serv_hosp_compl_federal',
+                          'val_serv_hosp_compl_gestor','valor_servicos_profissionais',
+                          'val_serv_prof_compl_federal','val_serv_prof_compl_gestor',
+                          'valor_medio_aih', 'valor_medio_intern','media_permanencia',
+                          'taxa_mortalidade']]
+correlation = df_sp.corr()
+
+# plot da matriz de correlação
+sns.set(rc={'figure.figsize':(15.7,8.27)})
+plot_sp = sns.heatmap(correlation, annot = True, fmt=".1f", linewidths=.6)
+print('Análise de correlações em São Paulo')
+plot_sp;
+
+# Modelagem 3.3
+
+df = df_geral[['mes_ano', 'internacoes', 'obitos', 'valor_medio_aih']]
+df.set_index('mes_ano', inplace=True)
+
+df_internacoes
+
+df_model_internacoes = ARIMA(df_internacoes, order=(2,1,0) )
+df_model_fit = df_model_internacoes.fit()
+df_forecast = df_model_fit.forecast(steps = 6)[0]
+df_model_fit.aic
+print('Internações nos proximos meses:')
+df_forecast
+
+df_obitos
+
+df_model_internacoes = ARIMA(df_obitos, order=(2,1,0) )
+df_model_fit = df_model_internacoes.fit()
+df_forecast = df_model_fit.forecast(steps = 6)[0]
+df_model_fit.aic
+print('obitos nos proximos meses:')
+df_forecast
+
+df_valor_medio_aih
+
+df_model_internacoes = ARIMA(df_valor_medio_aih, order=(2,1,0) )
+df_model_fit = df_model_internacoes.fit()
+df_forecast = df_model_fit.forecast(steps = 6)[0]
+df_model_fit.aic
+print('Internações nos proximos meses:')
+df_forecast
+
+# 4. Planejamento 
+
+#**Estratégia para redução nos casos de internações geral:**
+
+#- Reduzir investimento no valor_servicos_hospitalares
+#- Reduzir investimento no valor serviços profissionais
+#- aumentar investimento no serviços hop compl federal
+#- aumentar investimento no serviços hop compl gestor	
+#- aumentar investimento no Val serv prof - compl federal
+#- aumentar investimento no Val serv prof - compl gestor
+
+#**Para São Paulo:**
+
+#- Aumentar o Valor médio Valor médio das AIH aprovadas no período.
+#- Aumentar o Valor médio das AIH aprovadas, computadas como internações, no período.
+#- Dar mais orientações ao tempo de permanencia entre os dias de baixa e alta de internação, para um aumento
+
+#**O que deve ser considerado?**
+#- Deve ser levado em conta onde os valores estão sendo investido no geral, e passar orientação para tentar aumentar o tempo médio de permanencia em internações em São Paulo
